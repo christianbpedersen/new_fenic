@@ -18,6 +18,9 @@ NewFenic.configure do |c|
 end
 ```
 
+The wire format between agent and server is documented in
+[docs/PROTOCOL.md](docs/PROTOCOL.md).
+
 ## API
 
 ```ruby
