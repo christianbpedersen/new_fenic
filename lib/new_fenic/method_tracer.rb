@@ -32,7 +32,7 @@ module NewFenic
     def wrap(klass, method_name, segment_name, category)
       tracer = (klass.instance_variable_get(:@__new_fenic_tracer) ||
                 klass.instance_variable_set(:@__new_fenic_tracer, Module.new.tap { |m| klass.prepend(m) }))
-      return if tracer.method_defined?(method_name) || tracer.private_method_defined?(method_name)
+      return false if tracer.method_defined?(method_name) || tracer.private_method_defined?(method_name)
 
       visibility = if klass.private_method_defined?(method_name) then :private
                    elsif klass.protected_method_defined?(method_name) then :protected
@@ -50,33 +50,46 @@ module NewFenic
         end
       end
       tracer.send(visibility, method_name)
+      true
     end
 
-    # Traces every public method defined directly on the classes loaded from
-    # +dirs+ (e.g. app/services). Methods inherited from Rails are left alone.
+    # Traces every public method defined directly on the classes that live in
+    # +dirs+ (e.g. app/services). Constants are derived from file paths the
+    # way Zeitwerk does it (app/services/payments/stripe_client.rb ->
+    # Payments::StripeClient). Methods inherited from Rails are left alone.
     def auto_instrument(dirs, root)
-      dirs = Array(dirs).map { |d| File.expand_path(d, root.to_s) + "/" }
-      return 0 if dirs.empty?
-
       count = 0
-      ObjectSpace.each_object(Module) do |mod|
-        next if mod.singleton_class? || mod.name.nil?
-        next if defined?(::ActiveRecord::Base) && mod.is_a?(Class) && mod < ::ActiveRecord::Base
+      Array(dirs).each do |dir|
+        base = File.expand_path(dir, root.to_s)
+        Dir.glob(File.join(base, "**", "*.rb")).sort.each do |file|
+          mod = constant_for(file, base)
+          next unless mod.is_a?(Module)
+          next if defined?(::ActiveRecord::Base) && mod.is_a?(Class) && mod < ::ActiveRecord::Base
 
-        mod.public_instance_methods(false).each do |m|
-          next unless defined_in?(mod.instance_method(m), dirs)
-          wrap(mod, m, "Custom/#{mod.name}##{m}", :custom)
-          count += 1
+          mod.public_instance_methods(false).each do |m|
+            next unless defined_in?(mod.instance_method(m), [base + "/"])
+            count += 1 if wrap(mod, m, "Custom/#{mod.name}##{m}", :custom)
+          end
+          mod.singleton_class.public_instance_methods(false).each do |m|
+            next unless defined_in?(mod.method(m), [base + "/"])
+            count += 1 if wrap(mod.singleton_class, m, "Custom/#{mod.name}.#{m}", :custom)
+          end
         end
-        mod.singleton_class.public_instance_methods(false).each do |m|
-          next unless defined_in?(mod.method(m), dirs)
-          wrap(mod.singleton_class, m, "Custom/#{mod.name}.#{m}", :custom)
-          count += 1
-        end
-      rescue StandardError, NameError
-        next
       end
       count
+    end
+
+    def constant_for(file, base)
+      cpath = if defined?(::Rails) && ::Rails.respond_to?(:autoloaders) && ::Rails.autoloaders.main.respond_to?(:cpath_expected_at)
+                ::Rails.autoloaders.main.cpath_expected_at(file) rescue nil
+              end
+      cpath ||= begin
+        require "active_support/inflector"
+        ActiveSupport::Inflector.camelize(file.delete_prefix("#{base}/").delete_suffix(".rb"))
+      end
+      Object.const_get(cpath) if cpath
+    rescue StandardError
+      nil
     end
 
     def defined_in?(method, dirs)
