@@ -7,6 +7,9 @@ module NewFenic
     end
 
     def call(env)
+      # The Railtie inserts this middleware in every environment; it does
+      # nothing unless the agent actually started (enabled with an API key).
+      return @app.call(env) unless NewFenic.started?
       return @app.call(env) if Transaction.current || NewFenic.config.ignored_path?(env["PATH_INFO"].to_s)
 
       txn = Transaction.new(type: :web, uri: env["PATH_INFO"])

@@ -244,3 +244,24 @@ class ReporterRobustnessTest < NewFenicTest
     assert_operator agg.min, :<=, agg.total / agg.count
   end
 end
+
+class DisabledAgentTest < Minitest::Test
+  def test_endpoint_with_a_path_prefix_keeps_it
+    reporter = NewFenic::Reporter.new(NewFenic::Config.new.tap { |c| c.endpoint = "http://newfenic.apm.svc.cluster.local/apm/" }, NewFenic.aggregator)
+    assert_equal "/apm/api/v1/ingest", reporter.send(:ingest_uri).path
+    reporter = NewFenic::Reporter.new(NewFenic::Config.new.tap { |c| c.endpoint = "http://localhost:4400" }, NewFenic.aggregator)
+    assert_equal "/api/v1/ingest", reporter.send(:ingest_uri).path
+  end
+
+  def test_middleware_is_inert_when_the_agent_did_not_start
+    NewFenic.instance_variable_set(:@started, false)
+    called = false
+    status, = NewFenic::Middleware.new(->(_) { called = true; [200, {}, []] }).call(Rack::MockRequest.env_for("/x"))
+    assert called
+    assert_equal 200, status
+    assert_nil NewFenic::Transaction.current
+    assert NewFenic.aggregator.drain.first.empty?
+  ensure
+    NewFenic.instance_variable_set(:@started, true)
+  end
+end

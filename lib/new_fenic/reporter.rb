@@ -141,7 +141,7 @@ module NewFenic
     end
 
     def post(body)
-      uri = URI.join(@config.endpoint, "/api/v1/ingest")
+      uri = ingest_uri
       http = connection(uri)
       request = Net::HTTP::Post.new(uri.request_uri)
       request["Content-Type"] = "application/msgpack"
@@ -162,6 +162,16 @@ module NewFenic
       @stats[:last_error] = "#{e.class}: #{e.message}"
       log(:warn, "could not reach #{@config.endpoint}: #{e.class}: #{e.message}")
       false
+    end
+
+    # Appends to the endpoint's path, so a server mounted under a prefix
+    # (https://host/apm) receives /apm/api/v1/ingest.
+    def ingest_uri
+      @ingest_uri ||= begin
+        base = URI(@config.endpoint.to_s)
+        base.path = "#{base.path.chomp('/')}/api/v1/ingest"
+        base
+      end
     end
 
     def connection(uri)

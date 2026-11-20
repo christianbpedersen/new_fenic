@@ -133,6 +133,8 @@ module NewFenic
     end
 
     def record(txn)
+      return unless started?
+
       # Start (or, in a freshly forked worker, reset) the reporter first, so
       # resetting inherited state cannot discard this transaction.
       reporter.ensure_running
