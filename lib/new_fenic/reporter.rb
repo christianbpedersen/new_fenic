@@ -80,7 +80,8 @@ module NewFenic
         "v" => PROTOCOL_VERSION, "agent" => VERSION, "app" => @config.app_name, "env" => @config.environment,
         "host" => @config.host, "pid" => Process.pid, "sent_at" => Time.now.to_f.round(3),
         "rails" => (defined?(Rails.version) ? Rails.version : nil), "ruby" => RUBY_VERSION,
-        "apdex_t" => @config.apdex_t, "buckets" => wire_buckets, "traces" => traces,
+        "apdex_t" => @config.apdex_t, "revision" => @config.revision, "booted_at" => NewFenic.booted_at,
+        "buckets" => wire_buckets, "traces" => traces,
         "slow_queries" => slow_queries
       }
     end

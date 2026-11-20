@@ -1,3 +1,5 @@
+require "shellwords"
+
 module NewFenic
   class Config
     # Where the NewFenic server lives and how this app identifies itself.
@@ -51,6 +53,14 @@ module NewFenic
 
     attr_accessor :logger
 
+    # Code revision of this deploy; the server marks the time each new
+    # revision first reports as a deployment on every chart.
+    attr_writer :revision
+
+    def revision
+      @revision ||= detect_revision
+    end
+
     def initialize
       @endpoint = ENV.fetch("NEW_FENIC_ENDPOINT", "http://localhost:4400")
       @api_key = ENV["NEW_FENIC_API_KEY"]
@@ -85,6 +95,20 @@ module NewFenic
     def enabled?
       return @enabled unless @enabled.nil?
       !api_key.to_s.empty?
+    end
+
+    def detect_revision
+      env = ENV["NEW_FENIC_REVISION"] || ENV["GIT_REV"] || ENV["HEROKU_SLUG_COMMIT"] || ENV["RENDER_GIT_COMMIT"]
+      return env if env && !env.empty?
+
+      root = defined?(Rails.root) && Rails.root ? Rails.root.to_s : Dir.pwd
+      file = File.join(root, "REVISION")
+      return File.read(file).strip if File.exist?(file)
+
+      sha = `git -C #{root.shellescape} rev-parse --short HEAD 2>/dev/null`.strip
+      sha.empty? ? nil : sha
+    rescue StandardError
+      nil
     end
 
     def ignored_error?(error)

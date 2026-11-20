@@ -35,6 +35,10 @@ module NewFenic
       @reporter ||= Reporter.new(config, aggregator)
     end
 
+    def booted_at
+      @booted_at ||= Time.now.to_f.round(3)
+    end
+
     def started?
       @started == true
     end
@@ -45,6 +49,8 @@ module NewFenic
       return false unless config.enabled?
       return true if started?
 
+      booted_at
+      config.revision
       Subscribers.subscribe!
       require "new_fenic/instrumentation/active_record"
       Instrumentation::ActiveRecord.install!
