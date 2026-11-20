@@ -1,15 +1,20 @@
 # new_fenic
 
-The NewFenic agent for Rails. See the repository README for the full picture.
+The NewFenic agent for Rails: measures where each request and job spends its
+time (controller Ruby, views, ActiveRecord, the database, GraphQL resolvers,
+external APIs, cache, jobs, your own classes), aggregates it in-process per
+minute, and ships a compact gzipped MessagePack batch to a NewFenic server
+every 10 seconds. Nothing is sent per request, and SQL literals never leave
+the process.
 
 ```ruby
-gem "new_fenic"
+gem "new_fenic", git: "https://github.com/christianbpedersen/new_fenic.git", tag: "v0.1.0"
 
 # config/initializers/new_fenic.rb
 NewFenic.configure do |c|
   c.app_name = "MyApp"
   c.api_key  = ENV["NEW_FENIC_API_KEY"]     # reporting is off without a key
-  c.endpoint = ENV["NEW_FENIC_ENDPOINT"]    # e.g. https://newfenic.internal
+  c.endpoint = ENV["NEW_FENIC_ENDPOINT"]    # your NewFenic server, e.g. https://apm.example.com
 end
 ```
 
