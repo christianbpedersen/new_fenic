@@ -22,6 +22,13 @@ module NewFenic
     # Identical SQL executed at least this many times in one request is flagged as N+1.
     attr_accessor :n_plus_one_threshold
 
+    # Individual executions at least this slow (ms) are sampled with their
+    # backtrace, and SELECTs get an EXPLAIN plan from the reporter thread.
+    attr_accessor :slow_query_threshold, :explain_slow_queries, :max_slow_queries_per_flush
+
+    # GraphQL fields faster than this (ms) are counted but left out of trace trees.
+    attr_accessor :graphql_field_trace_threshold
+
     # Cardinality guards so a buggy naming scheme cannot blow up memory.
     attr_accessor :max_transaction_names, :max_sql_statements
 
@@ -50,6 +57,10 @@ module NewFenic
       @max_segments_per_trace = 1500
       @sql_backtrace_threshold = 10.0
       @n_plus_one_threshold = 10
+      @slow_query_threshold = 100.0
+      @explain_slow_queries = true
+      @max_slow_queries_per_flush = 50
+      @graphql_field_trace_threshold = 1.0
       @max_transaction_names = 2_000
       @max_sql_statements = 5_000
       @ignore_paths = [%r{\A/assets/}, %r{\A/up\z}, %r{\A/favicon}]

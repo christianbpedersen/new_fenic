@@ -21,6 +21,7 @@ module NewFenic
       @pid = nil
       @http = nil
       @stats = { flushes: 0, failures: 0, bytes: 0, last_error: nil }
+      @explainer = Explainer.new(config)
     end
 
     def ensure_running
@@ -52,10 +53,12 @@ module NewFenic
 
     def flush
       buckets, traces = @aggregator.drain
+      slow = @aggregator.take_slow_queries
       wire_buckets = @aggregator.take_pending + buckets.map { |minute, bucket| bucket_to_wire(minute, bucket) }
-      return true if wire_buckets.empty? && traces.empty?
+      return true if wire_buckets.empty? && traces.empty? && slow.empty?
 
-      body = encode(payload(wire_buckets, traces))
+      @explainer.explain(slow)
+      body = encode(payload(wire_buckets, traces, slow_queries_to_wire(slow)))
       if post(body)
         @stats[:flushes] += 1
         @stats[:bytes] += body.bytesize
@@ -72,12 +75,13 @@ module NewFenic
       false
     end
 
-    def payload(wire_buckets, traces)
+    def payload(wire_buckets, traces, slow_queries = [])
       {
         "v" => PROTOCOL_VERSION, "agent" => VERSION, "app" => @config.app_name, "env" => @config.environment,
         "host" => @config.host, "pid" => Process.pid, "sent_at" => Time.now.to_f.round(3),
         "rails" => (defined?(Rails.version) ? Rails.version : nil), "ruby" => RUBY_VERSION,
-        "apdex_t" => @config.apdex_t, "buckets" => wire_buckets, "traces" => traces
+        "apdex_t" => @config.apdex_t, "buckets" => wire_buckets, "traces" => traces,
+        "slow_queries" => slow_queries
       }
     end
 
@@ -108,6 +112,15 @@ module NewFenic
         "sql" => bucket.sql.map { |(type, name, _), agg| agg.to_wire(type, name) },
         "errors" => bucket.errors.values
       }
+    end
+
+    # Raw SQL and bind values stay in this process; only the obfuscated form ships.
+    def slow_queries_to_wire(samples)
+      samples.map do |q|
+        { "tx_type" => q[:tx_type], "tx" => q[:tx], "uri" => q[:uri], "key" => q[:key], "sql" => q[:sql],
+          "op" => q[:operation], "table" => q[:table], "duration" => q[:duration].round(3), "ts" => q[:ts].round(3),
+          "location" => q[:location], "backtrace" => q[:backtrace], "explain" => q[:explain] }
+      end
     end
 
     def post(body)

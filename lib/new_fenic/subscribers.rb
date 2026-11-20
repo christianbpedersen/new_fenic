@@ -98,10 +98,20 @@ module NewFenic
         statement = payload.delete(:__new_fenic_statement)
         return unless segment && statement
 
+        config = NewFenic.config
         location = nil
-        if segment.duration >= NewFenic.config.sql_backtrace_threshold
-          location = Subscribers.app_location
+        if segment.duration >= config.sql_backtrace_threshold
+          frames = Subscribers.app_backtrace
+          location = frames.first
           segment.attrs["loc"] = location if location && segment.attrs
+          if segment.duration >= config.slow_query_threshold
+            txn.record_slow_query(
+              key: statement.key, sql: statement.sql, operation: statement.operation, table: statement.table,
+              duration: segment.duration, ts: Time.now.to_f - segment.duration / 1000.0, location: location,
+              backtrace: frames, raw_sql: payload[:sql], binds: Subscribers.bind_values(payload),
+              pool: (payload[:connection].pool if payload[:connection].respond_to?(:pool))
+            )
+          end
         end
         txn.record_sql(statement, segment.duration, location)
       rescue StandardError => e
@@ -188,18 +198,35 @@ module NewFenic
       job.class.name
     end
 
-    # First stack frame inside the application (not gems, not Ruby itself).
-    def app_location
+    # Stack frames inside the application (not gems, not Ruby itself),
+    # innermost first, as "app/models/order.rb:12:in `total'".
+    def app_backtrace(limit = 10)
       root = defined?(Rails.root) && Rails.root ? "#{Rails.root}/" : nil
-      return nil unless root
+      return [] unless root
 
-      caller_locations(3, 80)&.each do |loc|
+      frames = []
+      caller_locations(3, 120)&.each do |loc|
         path = loc.absolute_path || loc.path
         next unless path&.start_with?(root)
         next if path.include?("/vendor/") || path.include?("/gems/")
-        return "#{path.delete_prefix(root)}:#{loc.lineno}:in `#{loc.label}'"
+        frames << "#{path.delete_prefix(root)}:#{loc.lineno}:in `#{loc.label}'"
+        break if frames.size >= limit
       end
-      nil
+      frames
+    end
+
+    def app_location
+      app_backtrace(1).first
+    end
+
+    # Bind values as the driver received them, kept only in memory so the
+    # reporter can EXPLAIN the real statement; never sent to the server.
+    def bind_values(payload)
+      binds = payload[:type_casted_binds]
+      binds = binds.call if binds.respond_to?(:call)
+      Array(binds).map { |b| b.respond_to?(:value_for_database) ? b.value_for_database : b }
+    rescue StandardError
+      []
     end
 
     def warn(error)

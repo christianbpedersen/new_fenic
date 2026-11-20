@@ -4,7 +4,7 @@ module NewFenic
   # finishes. Metrics are accumulated as segments close, so the trace tree is
   # only an optional side product and can be truncated without losing totals.
   class Transaction
-    CATEGORIES = %i[middleware controller view activerecord database external cache custom job].freeze
+    CATEGORIES = %i[middleware controller view activerecord database external cache custom job graphql].freeze
     KEY = :__new_fenic_transaction
 
     # name, category, start offset (ms), duration (ms), children, extra attrs
@@ -51,9 +51,9 @@ module NewFenic
       end
     end
 
-    SqlStat = Struct.new(:statement, :count, :total, :max, :location)
+    SqlStat = Struct.new(:statement, :count, :total, :max, :location, :hist, :slow)
 
-    attr_reader :type, :started_at, :segments, :sql, :breakdown, :root, :attributes
+    attr_reader :type, :started_at, :segments, :sql, :breakdown, :root, :attributes, :slow_queries
     attr_accessor :name, :status, :error, :uri, :queue_time, :duration, :ignored
 
     def self.current
@@ -75,6 +75,7 @@ module NewFenic
       @sql = {}
       @breakdown = Hash.new(0.0)
       @attributes = {}
+      @slow_queries = []
       @segment_count = 0
       @max_segments = config.max_segments_per_trace
       @root = Segment.new(type == :job ? "Job" : "Middleware/Rack", type == :job ? :job : :middleware, @start, nil, nil)
@@ -95,21 +96,23 @@ module NewFenic
       segment
     end
 
-    # Closes the segment matching +token+ (or the innermost one). Segments
-    # opened above it but never closed (exception paths) are closed too.
-    def finish_segment(token = nil, attrs = nil)
+    # Closes the segment matching +token+ (or the innermost one). It is
+    # normally on top of the stack, but fibers (GraphQL Dataloader) can finish
+    # segments out of order, so it is removed from wherever it sits. Segments
+    # that never close are closed when the transaction finishes.
+    #
+    # +prune_below+ (ms) drops a fast, childless segment from the trace tree
+    # while still counting it in the metrics; used for chatty GraphQL fields.
+    def finish_segment(token = nil, attrs = nil, prune_below: nil)
       return if @stack.size <= 1
 
       index = token ? @stack.rindex { |s| s.token.equal?(token) } : @stack.size - 1
-      return unless index && index.positive?
+      return unless index&.positive?
 
-      now = NewFenic.clock
-      segment = nil
-      while @stack.size > index
-        segment = @stack.pop
-        close(segment, now)
-      end
+      segment = @stack.delete_at(index)
+      close(segment, NewFenic.clock)
       segment.attrs = attrs if attrs
+      prune(segment) if prune_below && segment.in_tree && segment.children.nil? && segment.duration < prune_below
       segment
     end
 
@@ -125,12 +128,27 @@ module NewFenic
       stat = @sql[statement.key]
       unless stat
         return if @sql.size >= @config.max_sql_statements
-        stat = @sql[statement.key] = SqlStat.new(statement, 0, 0.0, 0.0, nil)
+        stat = @sql[statement.key] = SqlStat.new(statement, 0, 0.0, 0.0, nil, Hash.new(0), 0)
       end
       stat.count += 1
       stat.total += duration
       stat.max = duration if duration > stat.max
+      stat.hist[Histogram.index(duration)] += 1
+      stat.slow += 1 if duration >= @config.slow_query_threshold
       stat.location ||= location
+    end
+
+    MAX_SLOW_PER_TRANSACTION = 10
+
+    # Keeps the slowest individual executions so the server can show the
+    # exact statement, backtrace and query plan behind a latency spike.
+    def record_slow_query(sample)
+      if @slow_queries.size < MAX_SLOW_PER_TRANSACTION
+        @slow_queries << sample
+      else
+        fastest = @slow_queries.min_by { |q| q[:duration] }
+        @slow_queries[@slow_queries.index(fastest)] = sample if fastest[:duration] < sample[:duration]
+      end
     end
 
     def finish
@@ -154,6 +172,19 @@ module NewFenic
     end
 
     private
+
+    def prune(segment)
+      siblings = segment.parent&.children
+      return unless siblings
+
+      i = siblings.rindex { |c| c.equal?(segment) }
+      return unless i
+
+      siblings.delete_at(i)
+      segment.parent.children = nil if siblings.empty? && !segment.parent.equal?(@root)
+      segment.in_tree = false
+      @segment_count -= 1
+    end
 
     def close(segment, now)
       duration = now - segment.start

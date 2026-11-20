@@ -114,3 +114,38 @@ class InstrumentationTest < NewFenicTest
     reporter.singleton_class.send(:remove_method, :post)
   end
 end
+
+class SlowQueryTest < NewFenicTest
+  def test_slow_queries_are_sampled_with_plan_and_histogram
+    NewFenic.config.slow_query_threshold = 0
+    NewFenic.config.sql_backtrace_threshold = 0
+    run_request(->(_) { NewFenic.set_transaction_name("Slow#q"); Widget.where("price > ?", 5).to_a; [200, {}, []] })
+    reporter = NewFenic.reporter
+    sent = nil
+    reporter.define_singleton_method(:post) { |body| sent = body; true }
+    reporter.flush
+    doc = MessagePack.unpack(Zlib::GzipReader.new(StringIO.new(sent)).read)
+    q = doc["slow_queries"].find { |s| s["sql"].include?("price > ?") }
+    assert q, doc["slow_queries"].inspect
+    assert_equal "Slow#q", q["tx"]
+    refute_includes q.to_s, "price > 5"
+    assert q["explain"].is_a?(String)
+    refute_match(/EXPLAIN failed/, q["explain"])
+    sql = doc["buckets"].first["sql"].find { |s| s["key"] == q["key"] }
+    assert_equal 1, sql["hist"].values.sum
+    assert_equal 1, sql["slow"]
+  ensure
+    NewFenic.config.slow_query_threshold = 100.0
+    NewFenic.config.sql_backtrace_threshold = 10.0
+    reporter.singleton_class.send(:remove_method, :post)
+  end
+
+  def test_plan_obfuscation_keeps_costs
+    e = NewFenic::Explainer.new(NewFenic.config)
+    plan = "Seq Scan on users  (cost=0.00..35.50 rows=10 width=4)\n  Filter: ((email)::text = 'bob@x.com'::text AND (age > 42))"
+    out = e.obfuscate_plan(plan)
+    assert_includes out, "cost=0.00..35.50 rows=10"
+    refute_includes out, "bob@x.com"
+    refute_includes out, "42"
+  end
+end

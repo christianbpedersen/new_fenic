@@ -13,9 +13,10 @@ class TransactionTest < NewFenicTest
 
     outer = txn.segments["Custom/outer"]
     inner = txn.segments["Custom/inner"]
-    assert_in_delta 50, outer.total, 15
-    assert_in_delta 20, outer.exclusive, 10
-    assert_in_delta 30, inner.exclusive, 10
+    assert_operator inner.total, :>=, 30
+    assert_operator outer.exclusive, :>=, 20
+    assert_in_delta outer.total - inner.total, outer.exclusive, 0.01
+    assert_in_delta inner.total, inner.exclusive, 0.01
     assert_in_delta txn.duration, txn.breakdown.values.sum, 0.5
     tree = txn.trace_wire
     assert_equal "Custom/outer", tree[4][0][0]

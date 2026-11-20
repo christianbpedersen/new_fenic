@@ -6,6 +6,7 @@ require "new_fenic/histogram"
 require "new_fenic/sql_obfuscator"
 require "new_fenic/transaction"
 require "new_fenic/aggregator"
+require "new_fenic/explainer"
 require "new_fenic/reporter"
 require "new_fenic/middleware"
 require "new_fenic/subscribers"
@@ -49,6 +50,8 @@ module NewFenic
       Instrumentation::ActiveRecord.install!
       require "new_fenic/instrumentation/net_http"
       Instrumentation::NetHttp.install!
+      require "new_fenic/instrumentation/graphql"
+      Instrumentation::GraphQL.install!
       at_exit { reporter.stop }
       @started = true
     end

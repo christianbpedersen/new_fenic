@@ -81,7 +81,7 @@ module NewFenic
     end
 
     class SqlAgg
-      attr_accessor :statement, :count, :total, :min, :max, :max_per_tx, :location, :tx_count
+      attr_accessor :statement, :count, :total, :min, :max, :max_per_tx, :location, :tx_count, :hist, :slow
 
       def initialize(statement)
         @statement = statement
@@ -91,6 +91,8 @@ module NewFenic
         @min = Float::INFINITY
         @max = 0.0
         @max_per_tx = 0
+        @hist = Hash.new(0)
+        @slow = 0
       end
 
       def add(stat)
@@ -102,13 +104,16 @@ module NewFenic
         @min = avg if avg < @min
         @max_per_tx = stat.count if stat.count > @max_per_tx
         @location ||= stat.location
+        @slow += stat.slow
+        stat.hist.each { |i, c| @hist[i] += c }
       end
 
       def to_wire(type, tx_name)
         s = @statement
         { "tx_type" => type.to_s, "tx" => tx_name, "key" => s.key, "sql" => s.sql, "op" => s.operation, "table" => s.table,
           "count" => @count, "txns" => @tx_count, "total" => @total.round(3), "min" => @min.round(3),
-          "max" => @max.round(3), "max_per_tx" => @max_per_tx, "location" => @location }
+          "max" => @max.round(3), "max_per_tx" => @max_per_tx, "location" => @location,
+          "hist" => @hist, "slow" => @slow }
       end
     end
 
@@ -153,6 +158,7 @@ module NewFenic
         record_error(bucket, txn, name) if txn.error
 
         add_trace(trace) if trace
+        txn.slow_queries.each { |q| add_slow_query(q.merge(tx_type: txn.type.to_s, tx: name, uri: txn.uri)) }
       end
     end
 
@@ -161,6 +167,7 @@ module NewFenic
       @mutex.synchronize do
         buckets = @buckets
         traces = @traces
+        @drained_slow_queries = @slow_queries
         reset!
         [buckets, traces]
       end
@@ -171,6 +178,15 @@ module NewFenic
     def restore(payload_buckets, max_minutes: 10)
       @mutex.synchronize do
         @pending = (payload_buckets + @pending).last(max_minutes)
+      end
+    end
+
+    # Slow query samples taken by the last #drain.
+    def take_slow_queries
+      @mutex.synchronize do
+        q = @drained_slow_queries || []
+        @drained_slow_queries = nil
+        q
       end
     end
 
@@ -189,6 +205,7 @@ module NewFenic
     def reset!
       @buckets = {}
       @traces = []
+      @slow_queries = []
       @names ||= Set.new
       @pending ||= []
     end
@@ -215,6 +232,15 @@ module NewFenic
       else
         fastest = @traces.each_with_index.min_by { |t, _| t["duration"] }
         @traces[fastest[1]] = trace if fastest[0]["duration"] < trace["duration"]
+      end
+    end
+
+    def add_slow_query(sample)
+      if @slow_queries.size < @config.max_slow_queries_per_flush
+        @slow_queries << sample
+      else
+        i = @slow_queries.each_with_index.min_by { |q, _| q[:duration] }[1]
+        @slow_queries[i] = sample if @slow_queries[i][:duration] < sample[:duration]
       end
     end
 
