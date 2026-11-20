@@ -1,0 +1,154 @@
+require "net/http"
+require "uri"
+require "zlib"
+require "stringio"
+require "msgpack"
+
+module NewFenic
+  # Background thread that periodically drains the aggregator and POSTs one
+  # gzipped MessagePack document to the server. Restarts itself after fork
+  # (Puma cluster, Unicorn, Sidekiq swarm) because threads do not survive it.
+  class Reporter
+    PROTOCOL_VERSION = 1
+
+    attr_reader :aggregator, :stats
+
+    def initialize(config, aggregator)
+      @config = config
+      @aggregator = aggregator
+      @mutex = Mutex.new
+      @thread = nil
+      @pid = nil
+      @http = nil
+      @stats = { flushes: 0, failures: 0, bytes: 0, last_error: nil }
+    end
+
+    def ensure_running
+      return if @pid == Process.pid && @thread&.alive?
+
+      @mutex.synchronize do
+        return if @pid == Process.pid && @thread&.alive?
+
+        if @pid && @pid != Process.pid
+          # Forked child: drop the parent's half-built state and connection.
+          @aggregator.drain
+          @aggregator.take_pending
+          @http = nil
+        end
+        @pid = Process.pid
+        @thread = Thread.new { run }
+        @thread.name = "new_fenic-reporter" if @thread.respond_to?(:name=)
+        @thread.abort_on_exception = false
+        @thread.report_on_exception = false
+      end
+    end
+
+    def stop
+      thread = @thread
+      @thread = nil
+      thread&.kill
+      flush
+    end
+
+    def flush
+      buckets, traces = @aggregator.drain
+      wire_buckets = @aggregator.take_pending + buckets.map { |minute, bucket| bucket_to_wire(minute, bucket) }
+      return true if wire_buckets.empty? && traces.empty?
+
+      body = encode(payload(wire_buckets, traces))
+      if post(body)
+        @stats[:flushes] += 1
+        @stats[:bytes] += body.bytesize
+        true
+      else
+        @stats[:failures] += 1
+        @aggregator.restore(wire_buckets)
+        false
+      end
+    rescue StandardError => e
+      @stats[:failures] += 1
+      @stats[:last_error] = "#{e.class}: #{e.message}"
+      log(:warn, "flush failed: #{e.class}: #{e.message}")
+      false
+    end
+
+    def payload(wire_buckets, traces)
+      {
+        "v" => PROTOCOL_VERSION, "agent" => VERSION, "app" => @config.app_name, "env" => @config.environment,
+        "host" => @config.host, "pid" => Process.pid, "sent_at" => Time.now.to_f.round(3),
+        "rails" => (defined?(Rails.version) ? Rails.version : nil), "ruby" => RUBY_VERSION,
+        "apdex_t" => @config.apdex_t, "buckets" => wire_buckets, "traces" => traces
+      }
+    end
+
+    def encode(doc)
+      io = StringIO.new
+      io.set_encoding(Encoding::BINARY)
+      gz = Zlib::GzipWriter.new(io, Zlib::BEST_SPEED)
+      gz.write(MessagePack.pack(doc))
+      gz.close
+      io.string
+    end
+
+    private
+
+    def run
+      loop do
+        sleep @config.flush_interval
+        flush
+      end
+    rescue StandardError => e
+      log(:error, "reporter thread died: #{e.class}: #{e.message}")
+    end
+
+    def bucket_to_wire(minute, bucket)
+      {
+        "ts" => minute,
+        "transactions" => bucket.transactions.map { |(type, name), stat| stat.to_wire(type, name) },
+        "sql" => bucket.sql.map { |(type, name, _), agg| agg.to_wire(type, name) },
+        "errors" => bucket.errors.values
+      }
+    end
+
+    def post(body)
+      uri = URI.join(@config.endpoint, "/api/v1/ingest")
+      http = connection(uri)
+      request = Net::HTTP::Post.new(uri.request_uri)
+      request["Content-Type"] = "application/msgpack"
+      request["Content-Encoding"] = "gzip"
+      request["Authorization"] = "Bearer #{@config.api_key}"
+      request["User-Agent"] = "new_fenic-ruby/#{VERSION}"
+      request.body = body
+      response = http.request(request)
+      return true if response.is_a?(Net::HTTPSuccess)
+
+      @stats[:last_error] = "HTTP #{response.code}"
+      log(:warn, "server rejected payload: HTTP #{response.code} #{response.body.to_s[0, 200]}")
+      # 4xx other than 429 means the payload itself is bad; retrying will not help.
+      code = response.code.to_i
+      code.between?(400, 499) && code != 429
+    rescue StandardError => e
+      @http = nil
+      @stats[:last_error] = "#{e.class}: #{e.message}"
+      log(:warn, "could not reach #{@config.endpoint}: #{e.class}: #{e.message}")
+      false
+    end
+
+    def connection(uri)
+      return @http if @http&.started?
+
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = uri.scheme == "https"
+      http.open_timeout = @config.open_timeout
+      http.read_timeout = @config.read_timeout
+      http.write_timeout = @config.read_timeout if http.respond_to?(:write_timeout=)
+      http.keep_alive_timeout = 30
+      http.start
+      @http = http
+    end
+
+    def log(level, message)
+      @config.logger&.public_send(level, "[NewFenic] #{message}")
+    end
+  end
+end

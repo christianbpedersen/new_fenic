@@ -1,0 +1,134 @@
+require "socket"
+require "set"
+require "new_fenic/version"
+require "new_fenic/config"
+require "new_fenic/histogram"
+require "new_fenic/sql_obfuscator"
+require "new_fenic/transaction"
+require "new_fenic/aggregator"
+require "new_fenic/reporter"
+require "new_fenic/middleware"
+require "new_fenic/subscribers"
+require "new_fenic/method_tracer"
+
+module NewFenic
+  class << self
+    def config
+      @config ||= Config.new
+    end
+
+    def configure
+      yield config
+      config
+    end
+
+    def clock
+      Process.clock_gettime(Process::CLOCK_MONOTONIC, :float_millisecond)
+    end
+
+    def aggregator
+      @aggregator ||= Aggregator.new(config)
+    end
+
+    def reporter
+      @reporter ||= Reporter.new(config, aggregator)
+    end
+
+    def started?
+      @started == true
+    end
+
+    # Wires up instrumentation. Called by the Railtie after initializers run;
+    # call it yourself in a non-Rails Rack app.
+    def start!
+      return false unless config.enabled?
+      return true if started?
+
+      Subscribers.subscribe!
+      require "new_fenic/instrumentation/active_record"
+      Instrumentation::ActiveRecord.install!
+      require "new_fenic/instrumentation/net_http"
+      Instrumentation::NetHttp.install!
+      at_exit { reporter.stop }
+      @started = true
+    end
+
+    def current_transaction
+      Transaction.current
+    end
+
+    # Starts a transaction for work outside a request or job (rake tasks,
+    # scripts, consumers). Nested calls become segments of the outer one.
+    def in_transaction(name, type: :job)
+      if Transaction.current
+        return trace(name) { yield }
+      end
+
+      txn = Transaction.new(type: type, name: name)
+      Transaction.current = txn
+      begin
+        yield
+      rescue Exception => e # rubocop:disable Lint/RescueException
+        txn.error = e
+        raise
+      ensure
+        Transaction.current = nil
+        txn.finish
+        record(txn)
+      end
+    end
+
+    # Times a block as a segment of the current transaction. A no-op outside one.
+    def trace(name, category: :custom)
+      txn = Transaction.current
+      return yield unless txn
+
+      token = Object.new
+      txn.start_segment(name, category, token)
+      begin
+        yield
+      ensure
+        txn.finish_segment(token)
+      end
+    end
+
+    # Name the current transaction explicitly (e.g. for Rack endpoints or GraphQL operations).
+    def set_transaction_name(name)
+      txn = Transaction.current
+      txn.name = name if txn
+    end
+
+    def add_attribute(key, value)
+      txn = Transaction.current
+      txn.attributes[key.to_s] = value if txn
+    end
+
+    def notice_error(error)
+      txn = Transaction.current
+      txn.error ||= error if txn
+    end
+
+    def ignore_transaction!
+      txn = Transaction.current
+      txn.ignored = true if txn
+    end
+
+    def record(txn)
+      aggregator.record(txn)
+      reporter.ensure_running
+    rescue StandardError => e
+      config.logger&.warn("[NewFenic] could not record transaction: #{e.class}: #{e.message}")
+    end
+
+    # Test helper: forget all state.
+    def reset!
+      @aggregator = nil
+      @reporter = nil
+      @config = nil
+      @started = false
+      Transaction.current = nil
+    end
+  end
+end
+
+require "new_fenic/railtie" if defined?(Rails::Railtie)

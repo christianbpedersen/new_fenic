@@ -1,0 +1,48 @@
+require "test_helper"
+
+class TransactionTest < NewFenicTest
+  def test_exclusive_time_and_breakdown
+    txn = NewFenic::Transaction.new(type: :web, name: "A#b")
+    NewFenic::Transaction.current = txn
+    NewFenic.trace("Custom/outer") do
+      sleep 0.02
+      NewFenic.trace("Custom/inner") { sleep 0.03 }
+    end
+    NewFenic::Transaction.current = nil
+    txn.finish
+
+    outer = txn.segments["Custom/outer"]
+    inner = txn.segments["Custom/inner"]
+    assert_in_delta 50, outer.total, 15
+    assert_in_delta 20, outer.exclusive, 10
+    assert_in_delta 30, inner.exclusive, 10
+    assert_in_delta txn.duration, txn.breakdown.values.sum, 0.5
+    tree = txn.trace_wire
+    assert_equal "Custom/outer", tree[4][0][0]
+    assert_equal "Custom/inner", tree[4][0][4][0][0]
+  end
+
+  def test_unclosed_segments_are_closed_by_outer_finish
+    txn = NewFenic::Transaction.new(type: :web, name: "A#b")
+    outer = Object.new
+    txn.start_segment("Custom/outer", :custom, outer)
+    txn.start_segment("Custom/leaked", :custom, Object.new)
+    txn.finish_segment(outer)
+    txn.finish
+    assert_equal 1, txn.segments["Custom/leaked"].count
+    assert_equal 1, txn.segments["Custom/outer"].count
+  end
+
+  def test_trace_tree_is_capped_but_metrics_are_complete
+    NewFenic.config.max_segments_per_trace = 5
+    txn = NewFenic::Transaction.new(type: :web, name: "A#b")
+    NewFenic::Transaction.current = txn
+    20.times { NewFenic.trace("Custom/x") {} }
+    NewFenic::Transaction.current = nil
+    txn.finish
+    assert_equal 20, txn.segments["Custom/x"].count
+    assert_equal 5, txn.trace_wire[4].size
+  ensure
+    NewFenic.config.max_segments_per_trace = 1500
+  end
+end
