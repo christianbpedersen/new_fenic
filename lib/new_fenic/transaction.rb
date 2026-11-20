@@ -176,10 +176,6 @@ module NewFenic
       @stack.concat(segments)
     end
 
-    def in_segment_category?(category)
-      @stack.any? { |s| s.category == category }
-    end
-
     def record_sql(statement, duration, location)
       stat = @sql[statement.key]
       unless stat

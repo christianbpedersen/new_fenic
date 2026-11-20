@@ -42,9 +42,18 @@ module NewFenic
         q[:raw_sql].bytesize < 50_000
     end
 
+    def idle_connection?(pool)
+      stat = pool.stat
+      stat[:idle].to_i.positive? || stat[:connections].to_i < stat[:size].to_i
+    rescue StandardError
+      false
+    end
+
     def run(q)
       pool = q[:pool] || (defined?(::ActiveRecord::Base) && ::ActiveRecord::Base.connection_pool)
       return nil unless pool
+      # Never compete with requests for a connection: skip when none is free.
+      return "EXPLAIN skipped: connection pool busy" unless idle_connection?(pool)
 
       pool.with_connection do |conn|
         rows = conn.select_rows("EXPLAIN #{q[:raw_sql]}", "EXPLAIN", q[:binds] || [])

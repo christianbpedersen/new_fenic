@@ -187,3 +187,15 @@ class RuntimeTest < NewFenicTest
     NewFenic.config.trace_threshold = 300.0
   end
 end
+
+class ExplainerPoolTest < NewFenicTest
+  FakePool = Struct.new(:stat)
+
+  def test_skips_explain_when_pool_has_no_free_connection
+    e = NewFenic::Explainer.new(NewFenic.config)
+    busy = FakePool.new({ size: 2, connections: 2, busy: 2, idle: 0 })
+    q = { key: "k", raw_sql: "SELECT 1", duration: 500, pool: busy }
+    e.explain([q])
+    assert_match(/skipped/, q[:explain])
+  end
+end
