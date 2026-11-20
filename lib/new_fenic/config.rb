@@ -32,6 +32,9 @@ module NewFenic
     # Cardinality guards so a buggy naming scheme cannot blow up memory.
     attr_accessor :max_transaction_names, :max_sql_statements
 
+    # Exceptions that are expected control flow (404s, bad tokens), not errors.
+    attr_accessor :ignored_errors
+
     # Requests whose path matches are not recorded.
     attr_accessor :ignore_paths
 
@@ -63,6 +66,9 @@ module NewFenic
       @graphql_field_trace_threshold = 1.0
       @max_transaction_names = 2_000
       @max_sql_statements = 5_000
+      @ignored_errors = %w[ActiveRecord::RecordNotFound ActionController::RoutingError ActionController::UnknownFormat
+                           ActionController::InvalidAuthenticityToken ActionController::BadRequest ActionController::ParameterMissing
+                           AbstractController::ActionNotFound]
       @ignore_paths = [%r{\A/assets/}, %r{\A/up\z}, %r{\A/favicon}]
       @auto_instrument_paths = []
       @open_timeout = 2
@@ -73,6 +79,11 @@ module NewFenic
     def enabled?
       return @enabled unless @enabled.nil?
       !api_key.to_s.empty?
+    end
+
+    def ignored_error?(error)
+      return false unless error.is_a?(Exception)
+      error.class.ancestors.any? { |a| a.is_a?(Class) && ignored_errors.include?(a.name) }
     end
 
     def ignored_path?(path)

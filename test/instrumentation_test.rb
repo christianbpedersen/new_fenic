@@ -149,3 +149,18 @@ class SlowQueryTest < NewFenicTest
     refute_includes out, "42"
   end
 end
+
+class IgnoredErrorTest < NewFenicTest
+  class NotFound < StandardError; end
+
+  def test_expected_errors_are_not_counted
+    NewFenic.config.ignored_errors << "IgnoredErrorTest::NotFound"
+    app = ->(_) { NewFenic.set_transaction_name("Missing#show"); NewFenic.notice_error(NotFound.new("x")); [404, {}, []] }
+    run_request(app)
+    bucket, = drained
+    assert_equal 0, bucket.transactions[[:web, "Missing#show"]].errors
+    assert_empty bucket.errors
+  ensure
+    NewFenic.config.ignored_errors.delete("IgnoredErrorTest::NotFound")
+  end
+end

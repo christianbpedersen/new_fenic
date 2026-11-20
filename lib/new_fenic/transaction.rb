@@ -54,7 +54,13 @@ module NewFenic
     SqlStat = Struct.new(:statement, :count, :total, :max, :location, :hist, :slow)
 
     attr_reader :type, :started_at, :segments, :sql, :breakdown, :root, :attributes, :slow_queries
-    attr_accessor :name, :status, :error, :uri, :queue_time, :duration, :ignored
+    attr_accessor :name, :status, :uri, :queue_time, :duration, :ignored
+    attr_reader :error
+
+    # Expected exceptions (see Config#ignored_errors) are not recorded as errors.
+    def error=(error)
+      @error = error unless @config.ignored_error?(error)
+    end
 
     def self.current
       Thread.current[KEY]
