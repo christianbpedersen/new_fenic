@@ -30,6 +30,9 @@ class PricingService
 end
 ```
 
+Sidekiq workers are instrumented automatically when Sidekiq is loaded
+(ActiveJob jobs on Sidekiq report under the job class name).
+
 GraphQL schemas are instrumented automatically. To configure the tracer
 yourself:
 

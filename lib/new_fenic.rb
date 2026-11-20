@@ -59,6 +59,10 @@ module NewFenic
       Instrumentation::NetHttp.install!
       require "new_fenic/instrumentation/graphql"
       Instrumentation::GraphQL.install!
+      if defined?(::Sidekiq)
+        require "new_fenic/instrumentation/sidekiq"
+        Instrumentation::Sidekiq.install!
+      end
       at_exit { reporter.stop }
       @started = true
     end
