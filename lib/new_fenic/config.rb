@@ -29,6 +29,11 @@ module NewFenic
     # GraphQL fields faster than this (ms) are counted but left out of trace trees.
     attr_accessor :graphql_field_trace_threshold
 
+    # Separate "instantiate" segments for building model objects. That time is
+    # already inside the ActiveRecord segments; enabling this only splits it
+    # out, at the cost of one more event per query.
+    attr_accessor :instrument_instantiation
+
     # Cardinality guards so a buggy naming scheme cannot blow up memory.
     attr_accessor :max_transaction_names, :max_sql_statements
 
@@ -64,6 +69,7 @@ module NewFenic
       @explain_slow_queries = true
       @max_slow_queries_per_flush = 50
       @graphql_field_trace_threshold = 1.0
+      @instrument_instantiation = false
       @max_transaction_names = 2_000
       @max_sql_statements = 5_000
       @ignored_errors = %w[ActiveRecord::RecordNotFound ActionController::RoutingError ActionController::UnknownFormat

@@ -9,14 +9,15 @@ module NewFenic
 
     # name, category, start offset (ms), duration (ms), children, extra attrs
     class Segment
-      attr_accessor :name, :category, :start, :duration, :children, :child_time, :token, :attrs, :parent, :in_tree,
-                    :fiber, :active_since, :accumulated
+      attr_accessor :name, :category, :start, :duration, :children, :child_time, :token, :parent, :in_tree,
+                    :fiber, :active_since, :accumulated, :statement, :location
+      attr_writer :attrs
 
       def initialize(name, category, start, token, parent)
         @name = name
         @category = category
         @start = start
-        @token = token
+        @token = token || self
         @parent = parent
         @child_time = 0.0
         @duration = 0.0
@@ -31,10 +32,19 @@ module NewFenic
         @active_since ? @accumulated + (now - @active_since) : @accumulated
       end
 
+      # SQL details are only materialized when a trace is actually shipped.
+      def attrs
+        return @attrs unless @statement
+        a = { "sql" => @statement.sql, "key" => @statement.key }
+        a["loc"] = @location if @location
+        @attrs ? @attrs.merge(a) : a
+      end
+
       def to_wire(base_start)
         node = [name, category.to_s, (start - base_start).round(3), duration.round(3)]
         node << (children ? children.map { |c| c.to_wire(base_start) } : [])
-        node << attrs if attrs
+        a = attrs
+        node << a if a
         node
       end
     end
@@ -112,7 +122,8 @@ module NewFenic
       segment
     end
 
-    # Closes the segment matching +token+ (or the innermost one). It is
+    # Closes the segment matching +token+ (the segment itself when no token
+    # was given at start, or the innermost one when omitted). It is
     # normally on top of the stack, but fibers (GraphQL Dataloader) can finish
     # segments out of order, so it is removed from wherever it sits. Segments
     # that never close are closed when the transaction finishes.

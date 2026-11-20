@@ -35,7 +35,7 @@ module NewFenic
 
     class ProcessAction < Segment
       def initialize
-        super(:controller) { |p| "Controller/#{p[:controller]}##{p[:action]}" }
+        super(:controller) { |p| Names.controller(p[:controller], p[:action]) }
       end
 
       def start(event, id, payload)
@@ -81,10 +81,7 @@ module NewFenic
         end
 
         statement = SqlObfuscator.call(payload[:sql])
-        name = statement.table ? "Database/#{statement.table}/#{statement.operation.downcase}" : "Database/#{statement.operation.downcase}"
-        segment = txn.start_segment(name, :database, payload)
-        segment.attrs = { "sql" => statement.sql, "key" => statement.key }
-        payload[:__new_fenic_statement] = statement
+        txn.start_segment(statement.segment_name, :database, payload).statement = statement
       rescue StandardError => e
         Subscribers.warn(e)
       end
@@ -95,15 +92,15 @@ module NewFenic
         return if SKIP.include?(payload[:name])
 
         segment = txn.finish_segment(payload)
-        statement = payload.delete(:__new_fenic_statement)
-        return unless segment && statement
+        statement = segment&.statement
+        return unless statement
 
         config = NewFenic.config
         location = nil
         if segment.duration >= config.sql_backtrace_threshold
           frames = Subscribers.app_backtrace
           location = frames.first
-          segment.attrs["loc"] = location if location && segment.attrs
+          segment.location = location
           if segment.duration >= config.slow_query_threshold
             txn.record_slow_query(
               key: statement.key, sql: statement.sql, operation: statement.operation, table: statement.table,
@@ -121,7 +118,7 @@ module NewFenic
 
     class PerformJob < Segment
       def initialize
-        super(:job) { |p| "Job/#{Subscribers.job_name(p)}/perform" }
+        super(:job) { |p| Names.get("Job", Subscribers.job_name(p), "perform") }
       end
 
       def start(event, id, payload)
@@ -165,6 +162,44 @@ module NewFenic
 
     VIEW_PREFIX = %r{\A.*?/app/views/}
 
+    # Segment names are built from a handful of parts that repeat on every
+    # request; caching them keeps the hot path free of string allocations.
+    module Names
+      LIMIT = 20_000
+      @cache = {}
+      @lock = Mutex.new
+
+      module_function
+
+      # Returns the cached name for (a, b, c), building it once with the block.
+      def fetch(a, b, c)
+        name = @cache[a]&.[](b)&.[](c)
+        return name if name
+
+        name = yield.freeze
+        @lock.synchronize do
+          if (@count = @count.to_i + 1) > LIMIT
+            @cache = {}
+            @count = 1
+          end
+          ((@cache[a] ||= {})[b] ||= {})[c] = name
+        end
+        name
+      end
+
+      def get(prefix, subject, op)
+        fetch(prefix, subject, op) { "#{prefix}/#{subject}/#{op}" }
+      end
+
+      def controller(controller, action)
+        fetch(:controller, controller, action) { "Controller/#{controller}##{action}" }
+      end
+
+      def view(identifier, kind)
+        fetch(:view, identifier, kind) { "View/#{Subscribers.view_name(identifier)}/#{kind}" }
+      end
+    end
+
     module_function
 
     def subscribe!
@@ -173,13 +208,14 @@ module NewFenic
       n = ActiveSupport::Notifications
       n.subscribe("process_action.action_controller", ProcessAction.new)
       n.subscribe("sql.active_record", Sql.new)
-      n.subscribe("instantiation.active_record", Segment.new(:activerecord) { |p| "ActiveRecord/#{p[:class_name]}/instantiate" })
-      n.subscribe("render_template.action_view", Segment.new(:view) { |p| "View/#{view_name(p[:identifier])}/template" })
-      n.subscribe("render_partial.action_view", Segment.new(:view) { |p| "View/#{view_name(p[:identifier])}/partial" })
-      n.subscribe("render_collection.action_view", Segment.new(:view) { |p| "View/#{view_name(p[:identifier])}/collection" })
-      n.subscribe("render_layout.action_view", Segment.new(:view) { |p| "View/#{view_name(p[:identifier])}/layout" })
+      if NewFenic.config.instrument_instantiation
+        n.subscribe("instantiation.active_record", Segment.new(:activerecord) { |p| Names.get("ActiveRecord", p[:class_name], "instantiate") })
+      end
+      %w[template partial collection layout].each do |kind|
+        n.subscribe("render_#{kind}.action_view", Segment.new(:view) { |p| Names.view(p[:identifier], kind) })
+      end
       n.subscribe("perform.active_job", PerformJob.new)
-      n.subscribe("enqueue.active_job", Segment.new(:job) { |p| "Job/#{job_name(p)}/enqueue" })
+      n.subscribe("enqueue.active_job", Segment.new(:job) { |p| Names.get("Job", job_name(p), "enqueue") })
       %w[read write delete exist? fetch_hit generate read_multi write_multi increment decrement].each do |op|
         n.subscribe("cache_#{op}.active_support", Segment.new(:cache) { |_| "Cache/#{op.delete('?')}" })
       end

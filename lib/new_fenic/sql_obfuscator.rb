@@ -21,7 +21,7 @@ module NewFenic
       "UPDATE" => /\bUPDATE\s+"?(?:\w+"?\.)?"?(\w+)"?/i
     }.freeze
 
-    Statement = Struct.new(:sql, :key, :operation, :table)
+    Statement = Struct.new(:sql, :key, :operation, :table, :segment_name)
 
     @cache = {}
     @mutex = Mutex.new
@@ -52,7 +52,9 @@ module NewFenic
 
       operation = sql[OPERATION, 1]&.upcase || "OTHER"
       table = (pattern = TABLE_PATTERNS[operation]) ? sql[pattern, 1] : nil
-      Statement.new(sql.freeze, Digest::MD5.hexdigest(sql), operation, table).freeze
+      op = operation.downcase
+      name = (table ? "Database/#{table}/#{op}" : "Database/#{op}").freeze
+      Statement.new(sql.freeze, Digest::MD5.hexdigest(sql), operation, table, name).freeze
     end
   end
 end

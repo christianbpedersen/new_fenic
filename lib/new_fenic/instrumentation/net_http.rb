@@ -11,14 +11,13 @@ module NewFenic
           # Unstarted connections re-enter #request from inside #start.
           return super unless txn && started?
 
-          token = Object.new
-          txn.start_segment("External/#{address}/#{req.method}", :external, token)
+          segment = txn.start_segment(Subscribers::Names.get("External", address, req.method), :external)
           response = nil
           begin
             response = super
           ensure
-            segment = txn.finish_segment(token)
-            if segment
+            txn.finish_segment(segment)
+            if segment.in_tree
               segment.attrs = { "url" => "#{use_ssl? ? 'https' : 'http'}://#{address}:#{port}#{req.path.to_s.split('?').first}",
                                 "status" => response&.code }
             end

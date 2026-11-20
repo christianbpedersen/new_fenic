@@ -74,12 +74,11 @@ module NewFenic
         txn = Transaction.current
         return yield if txn.nil? || txn.current_segment.category == :activerecord
 
-        token = Object.new
-        txn.start_segment("ActiveRecord/#{model}/#{op}", :activerecord, token)
+        segment = txn.start_segment(Subscribers::Names.get("ActiveRecord", model, op), :activerecord)
         begin
           yield
         ensure
-          txn.finish_segment(token)
+          txn.finish_segment(segment)
         end
       end
     end

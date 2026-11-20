@@ -42,12 +42,11 @@ module NewFenic
         txn = Transaction.current
         return super(*args, **kwargs, &block) unless txn
 
-        token = Object.new
-        txn.start_segment(segment_name, category, token)
+        segment = txn.start_segment(segment_name, category)
         begin
           super(*args, **kwargs, &block)
         ensure
-          txn.finish_segment(token)
+          txn.finish_segment(segment)
         end
       end
       tracer.send(visibility, method_name)

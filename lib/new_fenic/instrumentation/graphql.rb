@@ -123,12 +123,11 @@ module NewFenic
         txn = Transaction.current
         return yield unless txn
 
-        token = Object.new
-        txn.start_segment(name, :graphql, token)
+        segment = txn.start_segment(name, :graphql)
         begin
           yield
         ensure
-          txn.finish_segment(token, prune_below: prune ? NewFenic.config.graphql_field_trace_threshold : nil)
+          txn.finish_segment(segment, prune_below: prune ? NewFenic.config.graphql_field_trace_threshold : nil)
         end
       end
 

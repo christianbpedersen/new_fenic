@@ -86,12 +86,11 @@ module NewFenic
       txn = Transaction.current
       return yield unless txn
 
-      token = Object.new
-      txn.start_segment(name, category, token)
+      segment = txn.start_segment(name, category)
       begin
         yield
       ensure
-        txn.finish_segment(token)
+        txn.finish_segment(segment)
       end
     end
 
