@@ -35,6 +35,8 @@ base = run(plain, N)
 require "new_fenic"
 NewFenic.configure { |c| c.enabled = true; c.api_key = "bench"; c.app_name = "Bench"; c.flush_interval = 3600 }
 NewFenic.start!
+# Never ship benchmark data anywhere (the reporter also flushes at exit).
+NewFenic.reporter.define_singleton_method(:post) { |_body| true }
 named = ->(env) { NewFenic.set_transaction_name("ItemsController#index"); WORK.call(env) }
 instrumented = NewFenic::Middleware.new(named)
 run(instrumented, 300)
@@ -43,6 +45,7 @@ with_agent = run(instrumented, N)
 reporter = NewFenic.reporter
 bytes = nil
 reporter.define_singleton_method(:post) { |body| bytes = body.bytesize; true }
+at_exit { reporter.define_singleton_method(:post) { |_body| true } }
 flush = Benchmark.realtime { reporter.flush }
 
 per_req = (with_agent - base) / N * 1_000_000
