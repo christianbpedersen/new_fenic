@@ -30,3 +30,34 @@ class SqlObfuscatorTest < Minitest::Test
     assert_equal "BEGIN", obf("BEGIN").operation
   end
 end
+
+class SqlObfuscatorLeakTest < Minitest::Test
+  def obf(sql) = NewFenic::SqlObfuscator.build(sql).sql
+
+  def test_comment_markers_inside_strings_do_not_leak
+    assert_equal "SELECT * FROM u WHERE pw = ? AND id = ?", obf("SELECT * FROM u WHERE pw = 'hunter2 -- secret' AND id = 5")
+    assert_equal "SELECT * FROM u WHERE a = ?", obf("SELECT * FROM u WHERE a = 'x /* y'")
+  end
+
+  def test_quotes_inside_comments_and_escapes
+    assert_equal "SELECT ? FROM t", obf("SELECT 'a' /* it's */ FROM t")
+    assert_equal "SELECT * FROM t WHERE n = ?", obf("SELECT * FROM t WHERE n = 'O\\'Brien secret'")
+    assert_equal "SELECT * FROM t WHERE n = ?", obf("SELECT * FROM t WHERE n = 'O''Brien'")
+  end
+
+  def test_unterminated_and_dollar_quoted
+    assert_equal "SELECT * FROM t WHERE n = ?", obf("SELECT * FROM t WHERE n = 'oops never closed")
+    assert_equal "DO ?", obf("DO $body$ BEGIN RAISE 'x'; END $body$")
+  end
+
+  def test_postgres_hash_operators_are_not_comments
+    assert_equal "SELECT data #> ? FROM t WHERE id = ?", obf("SELECT data #> '{a,b}' FROM t WHERE id = 3")
+  end
+
+  def test_large_statements_are_not_cached
+    big = "INSERT INTO t (a) VALUES ('#{'x' * 10_000}')"
+    a = NewFenic::SqlObfuscator.call(big)
+    refute NewFenic::SqlObfuscator.instance_variable_get(:@cache).key?(big)
+    assert_equal "INSERT INTO t (a) VALUES (?)", a.sql
+  end
+end

@@ -3,6 +3,7 @@ require "uri"
 require "zlib"
 require "stringio"
 require "msgpack"
+require "securerandom"
 
 module NewFenic
   # Background thread that periodically drains the aggregator and POSTs one
@@ -34,6 +35,7 @@ module NewFenic
         if @pid && @pid != Process.pid
           # Forked child: drop the parent's half-built state and connection.
           @aggregator.drain
+          @aggregator.take_slow_queries
           @aggregator.take_pending
           @http = nil
           @runtime = RuntimeSampler.new
@@ -61,7 +63,14 @@ module NewFenic
       return true if wire_buckets.empty? && traces.empty? && slow.empty? && runtime.nil?
 
       @explainer.explain(slow)
-      body = encode(payload(wire_buckets, traces, slow_queries_to_wire(slow), runtime))
+      body = begin
+        encode(payload(wire_buckets, traces, slow_queries_to_wire(slow), runtime))
+      rescue StandardError => e
+        # Something in a trace or sample could not be serialized; ship the
+        # metrics without them rather than lose the whole flush.
+        log(:warn, "dropping traces from flush: #{e.class}: #{e.message}")
+        encode(payload(wire_buckets, [], [], runtime))
+      end
       if post(body)
         @stats[:flushes] += 1
         @stats[:bytes] += body.bytesize
@@ -75,6 +84,7 @@ module NewFenic
       @stats[:failures] += 1
       @stats[:last_error] = "#{e.class}: #{e.message}"
       log(:warn, "flush failed: #{e.class}: #{e.message}")
+      @aggregator.restore(wire_buckets) if wire_buckets && !wire_buckets.empty?
       false
     end
 
@@ -111,6 +121,9 @@ module NewFenic
 
     def bucket_to_wire(minute, bucket)
       {
+        # Stable across retries: the server ignores a bucket id it has already
+        # stored, so a retry after a timed-out-but-committed POST cannot double count.
+        "id" => SecureRandom.uuid,
         "ts" => minute,
         "transactions" => bucket.transactions.map { |(type, name), stat| stat.to_wire(type, name) },
         "sql" => bucket.sql.map { |(type, name, _), agg| agg.to_wire(type, name) },

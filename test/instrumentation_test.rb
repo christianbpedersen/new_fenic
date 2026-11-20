@@ -199,3 +199,48 @@ class ExplainerPoolTest < NewFenicTest
     assert_match(/skipped/, q[:explain])
   end
 end
+
+class ReporterRobustnessTest < NewFenicTest
+  def test_unserializable_attribute_does_not_lose_metrics
+    NewFenic.config.trace_threshold = 0
+    run_request(lambda do |_|
+      NewFenic.set_transaction_name("Odd#attr")
+      NewFenic.add_attribute("when", Time.at(0))
+      NewFenic.add_attribute("obj", Object.new)
+      [200, {}, []]
+    end)
+    reporter = NewFenic.reporter
+    sent = nil
+    reporter.define_singleton_method(:post) { |body| sent = body; true }
+    assert reporter.flush
+    doc = MessagePack.unpack(Zlib::GzipReader.new(StringIO.new(sent)).read)
+    assert(doc["buckets"].flat_map { |b| b["transactions"] }.any? { |t| t["name"] == "Odd#attr" })
+    assert doc["buckets"].all? { |b| b["id"].is_a?(String) }
+    trace = doc["traces"].find { |t| t["tx"] == "Odd#attr" }
+    assert_kind_of String, trace["attributes"]["when"]
+  ensure
+    NewFenic.config.trace_threshold = 300.0
+    reporter.singleton_class.send(:remove_method, :post)
+  end
+
+  def test_retried_buckets_keep_their_id
+    run_request(->(_) { NewFenic.set_transaction_name("Retry#id"); [200, {}, []] })
+    reporter = NewFenic.reporter
+    bodies = []
+    reporter.define_singleton_method(:post) { |body| bodies << body; bodies.size > 1 }
+    reporter.flush
+    reporter.flush
+    ids = bodies.map { |b| MessagePack.unpack(Zlib::GzipReader.new(StringIO.new(b)).read)["buckets"].map { |x| x["id"] } }
+    assert_equal ids[0], ids[1] & ids[0]
+  ensure
+    reporter.singleton_class.send(:remove_method, :post)
+  end
+
+  def test_sql_min_is_per_execution
+    Widget.create!(name: "m", price: 1) if Widget.count.zero?
+    run_request(->(_) { NewFenic.set_transaction_name("Min#sql"); 3.times { Widget.where(price: 1).to_a }; [200, {}, []] })
+    bucket, = drained
+    agg = bucket.sql.values.find { |a| a.statement.sql.include?('"price" = ?') }
+    assert_operator agg.min, :<=, agg.total / agg.count
+  end
+end

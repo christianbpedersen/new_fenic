@@ -100,8 +100,7 @@ module NewFenic
         @tx_count += 1
         @total += stat.total
         @max = stat.max if stat.max > @max
-        avg = stat.total / stat.count
-        @min = avg if avg < @min
+        @min = stat.min if stat.min < @min
         @max_per_tx = stat.count if stat.count > @max_per_tx
         @location ||= stat.location
         @slow += stat.slow

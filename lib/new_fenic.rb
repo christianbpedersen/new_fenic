@@ -111,9 +111,15 @@ module NewFenic
       txn.name = name if txn
     end
 
+    # Values must survive MessagePack; anything else is stored as its string form.
     def add_attribute(key, value)
       txn = Transaction.current
-      txn.attributes[key.to_s] = value if txn
+      return unless txn
+
+      value = value.to_s[0, 1_000] unless value.nil? || value == true || value == false ||
+                                         value.is_a?(Integer) || value.is_a?(Float) || value.is_a?(String)
+      value = value[0, 1_000] if value.is_a?(String)
+      txn.attributes[key.to_s[0, 100]] = value
     end
 
     def notice_error(error)
@@ -127,8 +133,10 @@ module NewFenic
     end
 
     def record(txn)
-      aggregator.record(txn)
+      # Start (or, in a freshly forked worker, reset) the reporter first, so
+      # resetting inherited state cannot discard this transaction.
       reporter.ensure_running
+      aggregator.record(txn)
     rescue StandardError => e
       config.logger&.warn("[NewFenic] could not record transaction: #{e.class}: #{e.message}")
     end

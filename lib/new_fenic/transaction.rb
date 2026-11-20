@@ -71,7 +71,7 @@ module NewFenic
       end
     end
 
-    SqlStat = Struct.new(:statement, :count, :total, :max, :location, :hist, :slow)
+    SqlStat = Struct.new(:statement, :count, :total, :min, :max, :location, :hist, :slow)
 
     attr_reader :type, :started_at, :segments, :sql, :breakdown, :root, :attributes, :slow_queries
     attr_accessor :name, :status, :uri, :queue_time, :duration, :ignored
@@ -180,11 +180,12 @@ module NewFenic
       stat = @sql[statement.key]
       unless stat
         return if @sql.size >= @config.max_sql_statements
-        stat = @sql[statement.key] = SqlStat.new(statement, 0, 0.0, 0.0, nil, Hash.new(0), 0)
+        stat = @sql[statement.key] = SqlStat.new(statement, 0, 0.0, Float::INFINITY, 0.0, nil, Hash.new(0), 0)
       end
       stat.count += 1
       stat.total += duration
       stat.max = duration if duration > stat.max
+      stat.min = duration if duration < stat.min
       stat.hist[Histogram.index(duration)] += 1
       stat.slow += 1 if duration >= @config.slow_query_threshold
       stat.location ||= location

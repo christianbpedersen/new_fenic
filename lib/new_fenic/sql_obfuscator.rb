@@ -6,9 +6,21 @@ module NewFenic
   module SqlObfuscator
     MAX_LENGTH = 2_000
     CACHE_LIMIT = 2_000
+    # Bulk INSERTs can be megabytes each; caching them would hold raw data.
+    CACHEABLE_BYTES = 4_096
 
-    COMMENTS = %r{/\*.*?\*/|--[^\n]*}m
-    STRINGS = /'(?:[^']|'')*'|E'(?:[^'\\]|\\.)*'/
+    # Strings and comments are matched in one left-to-right pass, so a quote
+    # inside a comment or "--" inside a string cannot confuse the other.
+    # Backslash escapes are honoured (MySQL, E'' strings) and an
+    # unterminated literal swallows the rest of the statement rather than
+    # leaking it. Dollar-quoted bodies ($$...$$, $tag$...$tag$) count as strings.
+    LITERALS = /
+      (?<str>[EeNnBbXx]?'(?:[^'\\]|\\.|'')*(?:'|\z))
+      | (?<dq>\$(?<tag>[A-Za-z_]\w*)?\$.*?(?:\$\k<tag>\$|\z))
+      | (?<comment>\/\*.*?(?:\*\/|\z) | --[^\n]*)
+    /mx
+    # Kept for the EXPLAIN plan obfuscation.
+    STRINGS = /'(?:[^'\\]|\\.|'')*'/
     NUMBERS = /(?<![\w$."])-?\b\d+(?:\.\d+)?\b/
     IN_LISTS = /\bIN\s*\(\s*(?:\?|\$\d+)(?:\s*,\s*(?:\?|\$\d+))*\s*\)/i
     VALUES_LISTS = /\bVALUES\s*(\((?:[^()]|\([^()]*\))*\))(?:\s*,\s*\((?:[^()]|\([^()]*\))*\))+/i
@@ -34,6 +46,8 @@ module NewFenic
       return cached if cached
 
       statement = build(raw)
+      return statement if raw.bytesize > CACHEABLE_BYTES
+
       @mutex.synchronize do
         @cache.clear if @cache.size >= CACHE_LIMIT
         @cache[raw.frozen? ? raw : raw.dup.freeze] = statement
@@ -42,8 +56,7 @@ module NewFenic
     end
 
     def build(raw)
-      sql = raw.gsub(COMMENTS, " ")
-      sql = sql.gsub(STRINGS, "?")
+      sql = raw.gsub(LITERALS) { Regexp.last_match(:comment) ? " " : "?" }
       sql = sql.gsub(NUMBERS, "?")
       sql = sql.gsub(IN_LISTS, "IN (...)")
       sql = sql.gsub(VALUES_LISTS) { "VALUES #{Regexp.last_match(1)}, ..." }
