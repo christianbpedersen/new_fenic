@@ -22,6 +22,7 @@ module NewFenic
       @http = nil
       @stats = { flushes: 0, failures: 0, bytes: 0, last_error: nil }
       @explainer = Explainer.new(config)
+      @runtime = RuntimeSampler.new
     end
 
     def ensure_running
@@ -35,6 +36,7 @@ module NewFenic
           @aggregator.drain
           @aggregator.take_pending
           @http = nil
+          @runtime = RuntimeSampler.new
         end
         @pid = Process.pid
         @thread = Thread.new { run }
@@ -54,11 +56,12 @@ module NewFenic
     def flush
       buckets, traces = @aggregator.drain
       slow = @aggregator.take_slow_queries
+      runtime = @runtime.sample
       wire_buckets = @aggregator.take_pending + buckets.map { |minute, bucket| bucket_to_wire(minute, bucket) }
-      return true if wire_buckets.empty? && traces.empty? && slow.empty?
+      return true if wire_buckets.empty? && traces.empty? && slow.empty? && runtime.nil?
 
       @explainer.explain(slow)
-      body = encode(payload(wire_buckets, traces, slow_queries_to_wire(slow)))
+      body = encode(payload(wire_buckets, traces, slow_queries_to_wire(slow), runtime))
       if post(body)
         @stats[:flushes] += 1
         @stats[:bytes] += body.bytesize
@@ -75,14 +78,14 @@ module NewFenic
       false
     end
 
-    def payload(wire_buckets, traces, slow_queries = [])
+    def payload(wire_buckets, traces, slow_queries = [], runtime = nil)
       {
         "v" => PROTOCOL_VERSION, "agent" => VERSION, "app" => @config.app_name, "env" => @config.environment,
         "host" => @config.host, "pid" => Process.pid, "sent_at" => Time.now.to_f.round(3),
         "rails" => (defined?(Rails.version) ? Rails.version : nil), "ruby" => RUBY_VERSION,
         "apdex_t" => @config.apdex_t, "revision" => @config.revision, "booted_at" => NewFenic.booted_at,
         "buckets" => wire_buckets, "traces" => traces,
-        "slow_queries" => slow_queries
+        "slow_queries" => slow_queries, "runtime" => runtime
       }
     end
 

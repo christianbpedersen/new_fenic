@@ -164,3 +164,26 @@ class IgnoredErrorTest < NewFenicTest
     NewFenic.config.ignored_errors.delete("IgnoredErrorTest::NotFound")
   end
 end
+
+class RuntimeTest < NewFenicTest
+  def test_runtime_sample_is_a_delta_after_the_first_call
+    sampler = NewFenic::RuntimeSampler.new
+    assert_nil sampler.sample
+    Array.new(10_000) { Object.new }
+    s = sampler.sample
+    assert_operator s["allocations"], :>=, 10_000
+    assert_operator s["rss_mb"], :>, 1
+    assert s.key?("db_pool_size")
+  end
+
+  def test_traces_carry_gc_and_allocations
+    NewFenic.config.trace_threshold = 0
+    run_request(->(_) { NewFenic.set_transaction_name("Alloc#y"); Array.new(5_000) { "x" * 10 }; [200, {}, []] })
+    _, traces = drained
+    attrs = traces.find { |t| t["tx"] == "Alloc#y" }["attributes"]
+    assert_operator attrs["allocations"], :>=, 5_000
+    assert attrs.key?("gc_ms")
+  ensure
+    NewFenic.config.trace_threshold = 300.0
+  end
+end

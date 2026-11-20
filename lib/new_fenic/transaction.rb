@@ -75,6 +75,7 @@ module NewFenic
 
     attr_reader :type, :started_at, :segments, :sql, :breakdown, :root, :attributes, :slow_queries
     attr_accessor :name, :status, :uri, :queue_time, :duration, :ignored
+    attr_reader :gc_ms, :allocations
     attr_reader :error
 
     # Expected exceptions (see Config#ignored_errors) are not recorded as errors.
@@ -107,6 +108,8 @@ module NewFenic
       @root = Segment.new(type == :job ? "Job" : "Middleware/Rack", type == :job ? :job : :middleware, @start, nil, nil)
       @root.children = []
       @root.in_tree = true
+      @gc_start = GC.stat(:time).to_f
+      @alloc_start = GC.stat(:total_allocated_objects)
       @stack = [@root]
     end
 
@@ -212,6 +215,9 @@ module NewFenic
       close(@root, now)
       @stack.clear
       @duration = @root.duration
+      # Process-wide counters, so approximate under concurrency; shown on traces only.
+      @gc_ms = GC.stat(:time).to_f - @gc_start
+      @allocations = GC.stat(:total_allocated_objects) - @alloc_start
     end
 
     def error?

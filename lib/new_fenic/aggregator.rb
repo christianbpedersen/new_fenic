@@ -218,7 +218,8 @@ module NewFenic
         "tx_type" => txn.type.to_s, "tx" => txn.name, "ts" => txn.started_at.round(3), "duration" => txn.duration.round(3),
         "uri" => txn.uri, "status" => txn.status, "error" => txn.error && error_class(txn.error),
         "segments" => txn.segment_count, "breakdown" => txn.breakdown.transform_keys(&:to_s).transform_values { |v| v.round(3) },
-        "tree" => txn.trace_wire, "attributes" => txn.attributes
+        "tree" => txn.trace_wire,
+        "attributes" => txn.attributes.merge("gc_ms" => txn.gc_ms&.round(2), "allocations" => txn.allocations).compact
       }
     end
 
