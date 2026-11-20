@@ -50,6 +50,24 @@ class GraphqlTest < NewFenicTest
     assert_includes stat.segments.keys, "GraphQL/parse"
     assert_operator stat.breakdown[:graphql], :>=, 4.0
     assert stat.segments.key?("Database/widgets/select")
+    # Dataloader fibers must not double count: layers add up to the duration.
+    assert_in_delta stat.total, stat.breakdown.values.sum, stat.total * 0.02
+  end
+
+  def test_many_suspended_fibers_do_not_inflate_time
+    10.times { |i| Widget.create!(name: "f#{i}", price: i) }
+    setup
+    app = lambda do |_env|
+      result = TestSchema.execute("query Many { widgets { id sibling { name sibling { name } } } }")
+      raise result["errors"].inspect if result["errors"]
+      [200, {}, []]
+    end
+    run_request(app)
+    bucket, = drained
+    _, stat = bucket.transactions.first
+    assert_in_delta stat.total, stat.breakdown.values.sum, stat.total * 0.02
+    sibling = stat.segments["GraphQL/field/Widget.sibling"]
+    assert_operator sibling[2], :<=, stat.total # [category, count, total, ...]
   end
 
   def test_anonymous_and_outside_request

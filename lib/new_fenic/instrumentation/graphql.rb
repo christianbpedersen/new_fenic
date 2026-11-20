@@ -74,6 +74,16 @@ module NewFenic
           super
         end
 
+        def dataloader_fiber_yield(source)
+          Transaction.current&.suspend_fiber
+          super
+        end
+
+        def dataloader_fiber_resume(source)
+          super
+          Transaction.current&.resume_fiber
+        end
+
         private
 
         def name_transaction(txn, queries)

@@ -9,7 +9,8 @@ module NewFenic
 
     # name, category, start offset (ms), duration (ms), children, extra attrs
     class Segment
-      attr_accessor :name, :category, :start, :duration, :children, :child_time, :token, :attrs, :parent, :in_tree
+      attr_accessor :name, :category, :start, :duration, :children, :child_time, :token, :attrs, :parent, :in_tree,
+                    :fiber, :active_since, :accumulated
 
       def initialize(name, category, start, token, parent)
         @name = name
@@ -19,6 +20,15 @@ module NewFenic
         @parent = parent
         @child_time = 0.0
         @duration = 0.0
+        @active_since = start
+        @accumulated = 0.0
+        @fiber = Fiber.current
+      end
+
+      # Time this segment's fiber was actually running; excludes time it sat
+      # suspended (GraphQL Dataloader) while other fibers did the work.
+      def active_time(now)
+        @active_since ? @accumulated + (now - @active_since) : @accumulated
       end
 
       def to_wire(base_start)
@@ -126,6 +136,32 @@ module NewFenic
       @stack.last
     end
 
+    # Called when a fiber is about to be suspended (GraphQL Dataloader). Its
+    # open segments stop accruing time and leave the stack, so segments of
+    # the fibers that run meanwhile get correct parents and nothing is
+    # counted twice.
+    def suspend_fiber(fiber = Fiber.current)
+      segments = @stack.drop(1).select { |seg| seg.fiber.equal?(fiber) }
+      return if segments.empty?
+
+      now = NewFenic.clock
+      segments.each do |seg|
+        seg.accumulated += now - seg.active_since
+        seg.active_since = nil
+      end
+      @stack -= segments
+      ((@suspended ||= {})[fiber] ||= []).concat(segments)
+    end
+
+    def resume_fiber(fiber = Fiber.current)
+      segments = @suspended&.delete(fiber)
+      return unless segments
+
+      now = NewFenic.clock
+      segments.each { |seg| seg.active_since = now }
+      @stack.concat(segments)
+    end
+
     def in_segment_category?(category)
       @stack.any? { |s| s.category == category }
     end
@@ -159,6 +195,8 @@ module NewFenic
 
     def finish
       now = NewFenic.clock
+      @suspended&.each_value { |segs| segs.each { |seg| close(seg, now) } }
+      @suspended = nil
       close(@stack.pop, now) while @stack.size > 1
       close(@root, now)
       @stack.clear
@@ -193,7 +231,7 @@ module NewFenic
     end
 
     def close(segment, now)
-      duration = now - segment.start
+      duration = segment.active_time(now)
       duration = 0.0 if duration.negative?
       segment.duration = duration
       exclusive = duration - segment.child_time
